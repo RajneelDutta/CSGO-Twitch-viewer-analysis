@@ -1,0 +1,232 @@
+---
+title: "CW1.1"
+author: "Rajneel Dutta"
+date: "2023-04-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Libraries
+```{r echo = FALSE}
+#install.packages("pacman")
+pacman::p_load(tidyverse, janitor, ggthemr, dplyr, greybox, mice, MASS, 
+               bestNormalize, readxl, vars)
+
+ggthemr::ggthemr('fresh', layout = 'scientific', spacing = 2, type = 'inner')
+```
+
+```{r}
+df_raw <- read.csv("CPPC2.csv")
+
+df <- df_raw
+summary(df)
+```
+
+```{r}
+df <- df %>% 
+  janitor::clean_names()
+
+df <- df %>% 
+  mutate(CovidFlag = ifelse(date == "18/04/2020",1,0))
+df <- df %>% 
+  mutate(CS2Flag = ifelse(date == "13/11/2022",1,0))
+```
+
+```{r}
+md.pattern(df)
+```
+```{r}
+df %>% 
+  spread(lowess = TRUE)
+```
+
+```{r}
+df %>% 
+  dplyr::select(-date) %>% 
+  cor() %>% 
+  ggcorrplot::ggcorrplot(lab = TRUE, type = "upper")
+```
+# EDA
+
+## Price vs Players
+```{r}
+df %>% 
+  ggplot(aes(price, players, group = price)) +
+  geom_boxplot(outlier.colour = "firebrick", outlier.alpha = 0.8) +
+  labs(title = "Price v Players", 
+       x = "Price($)", 
+       y = "Player count") +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+## Twitch viewers vs Players
+```{r}
+df %>% 
+  ggplot(aes(twitch_viewers, players, group = price)) +
+  geom_point() +
+  labs(title = "Twitch v Players", 
+       x = "Twitch viewers", 
+       y = "Player count") +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+## Discount vs players
+```{r}
+df %>% 
+  mutate(discount_range = ifelse(discount < 33, " less than 33%",
+                                 if_else(discount > 33 & discount <= 50, 
+                                         "b/w 33 to 50%", "more than 50%"))) %>% 
+  group_by(discount_range) %>% 
+  ggplot(aes(discount_range, players)) +
+  geom_boxplot(outlier.colour = "firebrick", outlier.alpha = 0.8) +
+  labs(title = "Discount v Players", 
+       x = "Discount ranges(%)", 
+       y = "Player count") +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+## Before and after free
+```{r}
+df %>% 
+  mutate(free = ifelse(price > 0, "Paid", "Free")) %>% 
+  group_by(free) %>% 
+  ggplot(aes(free, players)) +
+  geom_boxplot(outlier.color = "firebrick", outlier.alpha = 0.5) +  
+  labs(title = "Free v Player counts", 
+       x = "Free", 
+       y = "Player count") +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+
+
+# MODEL 1
+```{r}
+model1 <- alm(players~twitch_viewers,data=df)
+```
+
+```{r}
+par(mfcol=c(3,2))
+plot(model1,c(1,2,4,6,7,12))
+```
+```{r}
+summary(model1)
+```
+```{r}
+model1.1 <- alm(players~.-date,data=df)
+```
+
+```{r}
+par(mfcol=c(3,2))
+plot(model1.1,c(1,2,4,6,7,12))
+```
+```{r}
+summary(model1.1)
+```
+```{r}
+p1 <- pacf(df$price)
+p2 <- pacf(df$twitch_viewers)
+p3 <- pacf(df$discount)
+p4 <- pacf(df$CovidFlag)
+p5 <- pacf(df$CS2Flag)
+p6 <- pacf(df$major)
+
+```
+
+```{r}
+# see lead effect of major, twitch viewers, discount on Players
+df1.1Exp <- df %>% 
+  dplyr::select(price, twitch_viewers, discount, CovidFlag, CS2Flag, major) %>% 
+  xregExpander(lags=c(-10:15), gaps="zero")
+
+write.csv(df1.1Exp, "df1.1Exp.csv")
+
+#df$playersLag4 <- lag(df$players, 4)
+#df$playersLag4 <- replace(df$playersLag2, 
+#                          is.na(df$playersLag2), 0)
+# Now merge the variables and correct the name of the response variable:
+#df1.1Exp <- cbind(df$CovidFlag,as.data.frame(df1.1Exp))
+df1.12Exp <- read.csv("df1.1Exp.csv")
+
+df1.12Exp <- cbind(df1.12Exp, playersLag4 = df$playersLag4)
+
+df1.12Exp <- cbind(Players=df$players,as.data.frame(df1.12Exp))
+df1.12Exp <- df1.12Exp[,-2]
+
+#logs
+#df1.2Exp <- df1.1Exp
+#df1.2Exp$Players <- log(df1.1Exp$Players)
+
+head(df1.12Exp)
+
+# all time high on covid breached on 26/02/2023
+```
+
+# Train Test Validation
+```{r}
+obs <- nrow(df1.12Exp)
+obsInsample <- obs * 0.75
+obsHoldout <- obs * 0.25
+```
+
+# Modelling
+```{r}
+# Effect of twitch viewers on Players
+almModels <- vector("list",8)
+almModels[[1]] <- alm(Players~ .,df1.12Exp, subset = 1:obsInsample)
+almModels[[2]] <- alm(Players~twitch_viewers,df1.12Exp, subset = 1:obsInsample)
+almModels[[3]] <- alm(Players~twitch_viewers + twitch_viewersLag1,df1.12Exp, 
+                      subset = 1:obsInsample)
+almModels[[4]] <- alm(Players~twitch_viewers + twitch_viewersLag1+ 
+                        twitch_viewersLead1,df1.12Exp, subset = 1:obsInsample)
+almModels[[5]] <- stepwise(df1.12Exp, subset = 1:obsInsample)
+almModels[[6]] <- stepwise(df1.12Exp, subset = 1:obsInsample)
+almModels[[7]] <- alm(players~twitch_viewers + discount:major,df)
+almModels[[8]] <- alm(Players~.-twitch_viewers,df1.12Exp, subset = 1:obsInsample)
+
+names(almModels) <- c("Sink","Player~Twitch","PlayerVTwitch(1,0)",
+                      "PlayerVTwitch(1,1)", "Stepwise", "Stepwise_dlnorm",
+                      "InteractionEffect", "ExcludingTwitch")
+```
+
+```{r}
+knitr::kable(sapply(almModels,AICc), col.names = "AICc")
+```
+```{r}
+#sapply(almModels,RSqaured)
+```
+
+```{r}
+knitr::kable(summary(almModels[[5]]))
+summary(almModels[[5]])$adj.r.squared
+```
+
+```{r best_model}
+par(mfcol=c(3,2))
+plot(almModels[[5]],c(1,2,4,6,7,12))
+```
+# Testing
+```{r}
+modelForecasts <- predict(almModels[[5]], tail(df1.12Exp,obsHoldout))
+```
+
+```{r}
+plot(modelForecasts)
+```
+```{r}
+measures(tail(df1.12Exp$Players,obsHoldout),
+         modelForecasts$mean, actuals(almModels[[5]]))
+```
+
+
+
+
